@@ -411,80 +411,41 @@ func (t *Translator) collectDefines(declares []*CDecl, defines map[string]*cc.Ma
 			continue
 		}
 		tokens := macro.ReplacementList()
-		srcParts := make([]string, 0, len(tokens))
-		exprParts := make([]string, 0, len(tokens))
-		valid := true
-
-		// TODO: some state machine
-		needsTypecast := false
-		typecastValue := false
-		typecastValueParens := 0
-
-		for _, token := range tokens {
-			src := token.SrcStr()
-			srcParts = append(srcParts, src)
-			switch token.Ch {
-			case rune(cc.IDENTIFIER):
-				if _, ok := seen[src]; ok {
-					// const reference
-					exprParts = append(exprParts, string(t.TransformName(TargetConst, src, true)))
-				} else if _, ok := t.typedefsSet[src]; ok {
-					// type reference
-					needsTypecast = true
-					exprParts = append(exprParts, string(t.TransformName(TargetType, src, true)))
-				} else {
-					// an unresolved reference
-					valid = false
-					break
-				}
-			default:
-				// TODO: state machine
-				const (
-					lparen = rune(40)
-					rparen = rune(41)
-				)
-				switch {
-				case needsTypecast && token.Ch == rparen:
-					typecastValue = true
-					needsTypecast = false
-					exprParts = append(exprParts, src+"(")
-				case typecastValue && token.Ch == lparen:
-					typecastValueParens++
-				case typecastValue && token.Ch == rparen:
-					if typecastValueParens == 0 {
-						typecastValue = false
-						exprParts = append(exprParts, ")"+src)
-					} else {
-						typecastValueParens--
-					}
-				default:
-					// somewhere in the world a kitten died because of this
-					if token.Ch == '~' {
-						src = "^"
-					}
-					if runes := []rune(src); len(runes) > 0 && isNumeric(runes) {
-						// TODO(xlab): better const handling
-						src = readNumeric(runes)
-					}
-					exprParts = append(exprParts, src)
-				}
-			}
-			if !valid {
-				break
-			}
-		}
-		if typecastValue {
-			// still in typecast value, need to close paren
-			exprParts = append(exprParts, ")")
-			typecastValue = false
-		}
+		exprParts, srcParts, valid := t.tokensToGoExpr(tokens, seen)
 		if !valid {
-			if macro.Type().Kind() == cc.InvalidKind {
-				// fallback to the evaluated value
+			// (a) Try to evaluate as integer by expanding function-like macro calls
+			// (e.g. VK_API_VERSION_1_1 = VK_MAKE_API_VERSION(0, 1, 1, 0) → 4198400).
+			if v, ok := tryEvalWithMacroExpansion(tokens, defines); ok {
 				t.defines = append(t.defines, &CDecl{
 					IsDefine: true,
 					Name:     name,
-					Value:    Value(macro.Value),
+					Value:    v,
+					Position: macro.Position(),
+				})
+				continue
+			}
+			// (b) Try to expand function-like macros and generate a Go expression
+			// (e.g. VK_HEADER_VERSION_COMPLETE references VK_HEADER_VERSION which is
+			// a known constant and cannot be reduced to a plain integer).
+			if expandedToks, ok := expandFnMacroCallInTokens(tokens, defines); ok {
+				exprParts2, srcParts2, valid2 := t.tokensToGoExpr(expandedToks, seen)
+				if valid2 && len(exprParts2) > 0 {
+					t.defines = append(t.defines, &CDecl{
+						IsDefine:   true,
+						Name:       name,
+						Expression: strings.Join(exprParts2, " "),
+						Src:        strings.Join(srcParts2, " "),
+						Position:   macro.Position(),
+					})
+					continue
+				}
+			}
+			// (c) Fallback to the cc-evaluated value (may be Unknown).
+			if macro.Type().Kind() == cc.InvalidKind {
+				t.defines = append(t.defines, &CDecl{
+					IsDefine: true,
+					Name:     name,
+					Value:    Value(macro.Value()),
 					Position: macro.Position(),
 				})
 			}
@@ -498,6 +459,82 @@ func (t *Translator) collectDefines(declares []*CDecl, defines map[string]*cc.Ma
 			Position:   macro.Position(),
 		})
 	}
+}
+
+// tokensToGoExpr converts a slice of C tokens (a macro replacement list) into
+// a Go expression string. It returns the expression parts, source parts, and
+// whether the conversion was valid (i.e. no unresolved identifiers were found).
+func (t *Translator) tokensToGoExpr(tokens []cc.Token, seen map[string]struct{}) (exprParts, srcParts []string, valid bool) {
+	exprParts = make([]string, 0, len(tokens))
+	srcParts = make([]string, 0, len(tokens))
+	valid = true
+
+	needsTypecast := false
+	typecastValue := false
+	typecastValueParens := 0
+
+	for _, token := range tokens {
+		src := token.SrcStr()
+		srcParts = append(srcParts, src)
+		switch token.Ch {
+		case rune(cc.IDENTIFIER):
+			if _, ok := seen[src]; ok {
+				// const reference
+				exprParts = append(exprParts, string(t.TransformName(TargetConst, src, true)))
+			} else if _, ok := t.typedefsSet[src]; ok {
+				// type reference
+				needsTypecast = true
+				typeName := cBuiltinToGoType(src)
+				if typeName == "" {
+					typeName = string(t.TransformName(TargetType, src, true))
+				}
+				exprParts = append(exprParts, typeName)
+			} else {
+				// an unresolved reference
+				valid = false
+				break
+			}
+		default:
+			// TODO: state machine
+			const (
+				lparen = rune(40)
+				rparen = rune(41)
+			)
+			switch {
+			case needsTypecast && token.Ch == rparen:
+				typecastValue = true
+				needsTypecast = false
+				exprParts = append(exprParts, src+"(")
+			case typecastValue && token.Ch == lparen:
+				typecastValueParens++
+			case typecastValue && token.Ch == rparen:
+				if typecastValueParens == 0 {
+					typecastValue = false
+					exprParts = append(exprParts, ")"+src)
+				} else {
+					typecastValueParens--
+				}
+			default:
+				// somewhere in the world a kitten died because of this
+				if token.Ch == '~' {
+					src = "^"
+				}
+				if runes := []rune(src); len(runes) > 0 && isNumeric(runes) {
+					// TODO(xlab): better const handling
+					src = readNumeric(runes)
+				}
+				exprParts = append(exprParts, src)
+			}
+		}
+		if !valid {
+			break
+		}
+	}
+	if typecastValue {
+		// still in typecast value, need to close paren
+		exprParts = append(exprParts, ")")
+	}
+	return exprParts, srcParts, valid
 }
 
 func (t *Translator) resolveTypedefs(typedefs []*CDecl) {
