@@ -6,7 +6,7 @@ import (
 	"math/rand"
 	"sort"
 
-	tl "github.com/xlab/c-for-go/translator"
+	tl "github.com/tomas-mraz/c-for-go/translator"
 )
 
 type Generator struct {

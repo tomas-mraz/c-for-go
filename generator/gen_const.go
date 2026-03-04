@@ -6,7 +6,7 @@ import (
 	"io"
 	"path/filepath"
 
-	tl "github.com/xlab/c-for-go/translator"
+	tl "github.com/tomas-mraz/c-for-go/translator"
 )
 
 func (gen *Generator) writeDefinesGroup(wr io.Writer, defines []*tl.CDecl) (n int) {

@@ -11,9 +11,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/xlab/c-for-go/generator"
-	"github.com/xlab/c-for-go/parser"
-	"github.com/xlab/c-for-go/translator"
+	"github.com/tomas-mraz/c-for-go/generator"
+	"github.com/tomas-mraz/c-for-go/parser"
+	"github.com/tomas-mraz/c-for-go/translator"
 	"github.com/xlab/pkgconfig/pkg"
 	"golang.org/x/tools/imports"
 	"gopkg.in/yaml.v3"

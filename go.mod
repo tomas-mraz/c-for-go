@@ -1,4 +1,4 @@
-module github.com/xlab/c-for-go
+module github.com/tomas-mraz/c-for-go
 
 go 1.24.0
 

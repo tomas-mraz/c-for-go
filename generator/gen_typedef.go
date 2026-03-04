@@ -5,7 +5,7 @@ import (
 	"io"
 	"path/filepath"
 
-	tl "github.com/xlab/c-for-go/translator"
+	tl "github.com/tomas-mraz/c-for-go/translator"
 )
 
 func (gen *Generator) writeTypeTypedef(wr io.Writer, decl *tl.CDecl, seenNames map[string]bool) {
