@@ -16,7 +16,7 @@ import (
 	"github.com/xlab/c-for-go/translator"
 	"github.com/xlab/pkgconfig/pkg"
 	"golang.org/x/tools/imports"
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
 	"modernc.org/cc/v4"
 )
 
@@ -73,6 +73,7 @@ func NewProcess(configPath, outputPath string) (*Process, error) {
 		cfg.Parser.CCIncl = *ccIncl
 		cfg.Parser.IncludePaths = append(cfg.Parser.IncludePaths, paths...)
 		cfg.Parser.IncludePaths = append(cfg.Parser.IncludePaths, filepath.Dir(configPath))
+		cfg.Parser.DefineLocations = extractParserDefineLocations(cfgData, filepath.Base(configPath))
 	} else {
 		return nil, errors.New("process: generator config was not specified")
 	}
@@ -125,6 +126,46 @@ func NewProcess(configPath, outputPath string) (*Process, error) {
 		c.genSync.Done()
 	}()
 	return c, nil
+}
+
+func extractParserDefineLocations(cfgData []byte, configFile string) map[string]parser.DefineLocation {
+	var root yaml.Node
+	if err := yaml.Unmarshal(cfgData, &root); err != nil {
+		return nil
+	}
+	if len(root.Content) == 0 {
+		return nil
+	}
+	top := root.Content[0]
+	if top.Kind != yaml.MappingNode {
+		return nil
+	}
+	parserNode := getMapValue(top, "PARSER")
+	if parserNode == nil || parserNode.Kind != yaml.MappingNode {
+		return nil
+	}
+	definesNode := getMapValue(parserNode, "Defines")
+	if definesNode == nil || definesNode.Kind != yaml.MappingNode {
+		return nil
+	}
+	locations := make(map[string]parser.DefineLocation, len(definesNode.Content)/2)
+	for i := 0; i+1 < len(definesNode.Content); i += 2 {
+		key := definesNode.Content[i]
+		locations[key.Value] = parser.DefineLocation{
+			File: configFile,
+			Line: key.Line,
+		}
+	}
+	return locations
+}
+
+func getMapValue(node *yaml.Node, key string) *yaml.Node {
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			return node.Content[i+1]
+		}
+	}
+	return nil
 }
 
 func (c *Process) Generate(noCGO bool) {

@@ -21,9 +21,16 @@ type Config struct {
 	IgnoredPaths    []string `yaml:"IgnoredPaths"`
 
 	Defines map[string]interface{} `yaml:"Defines"`
+	// DefineLocations maps parser define names to their source config file/line.
+	DefineLocations map[string]DefineLocation `yaml:"-"`
 
 	CCDefs bool `yaml:"-"`
 	CCIncl bool `yaml:"-"`
+}
+
+type DefineLocation struct {
+	File string
+	Line int
 }
 
 func ParseWith(cfg *Config) (*cc.AST, error) {
@@ -38,6 +45,13 @@ func ParseWith(cfg *Config) (*cc.AST, error) {
 	var predefined string
 	// user-provided defines take precedence
 	for name, value := range cfg.Defines {
+		if loc, ok := cfg.DefineLocations[name]; ok && loc.Line > 0 {
+			file := loc.File
+			if len(file) == 0 {
+				file = "<config>"
+			}
+			predefined += fmt.Sprintf("\n#line %d %q", loc.Line, file)
+		}
 		switch v := value.(type) {
 		case string:
 			predefined += fmt.Sprintf("\n#define %s \"%s\"", name, v)

@@ -29,19 +29,6 @@ var (
 	}, spaceStr)
 )
 
-// narrowPath reduces full path to file name and parent dir only.
-func narrowPath(fp string) string {
-	if !filepath.IsAbs(fp) {
-		if abs, err := filepath.Abs(fp); err != nil {
-			// seems to be reduced already
-			return fp
-		} else {
-			fp = abs
-		}
-	}
-	return filepath.Join(filepath.Base(filepath.Dir(fp)), filepath.Base(fp))
-}
-
 func replaceBytes(buf []byte, idx []int, piece []byte) []byte {
 	a, b := idx[0], idx[1]
 	altered := make([]byte, len(buf)-(b-a)+len(piece))
@@ -68,7 +55,7 @@ func (t *Translator) IsTokenIgnored(p token.Position) bool {
 func (t *Translator) SrcLocation(docTarget RuleTarget, name string, p token.Position) string {
 	filename := filepath.Base(p.Filename)
 	defaultLocation := func() string {
-		return fmt.Sprintf("%s:%d", narrowPath(p.Filename), p.Line)
+		return fmt.Sprintf("%s:%d", filename, p.Line)
 	}
 	rxs, ok := t.compiledRxs[ActionDocument][docTarget]
 	if !ok {
@@ -98,7 +85,7 @@ func (t *Translator) SrcLocation(docTarget RuleTarget, name string, p token.Posi
 
 	goName := t.TransformName(TargetGlobal, name, true)
 	goName = t.TransformName(TargetPostGlobal, string(goName), true)
-	values := fmt.Sprintf("%s;%s;%d;%s;%s;", narrowPath(p.Filename),
+	values := fmt.Sprintf("%s;%s;%d;%s;%s;", filename,
 		filename, p.Line, name, string(goName))
 	location := srcReferenceRx.ReplaceAllString(values, template)
 	return location
