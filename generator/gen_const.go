@@ -15,6 +15,9 @@ func (gen *Generator) writeDefinesGroup(wr io.Writer, defines []*tl.CDecl) (n in
 		if !decl.IsDefine {
 			continue
 		}
+		if isUnknownConstValue(decl.Value) {
+			continue
+		}
 		name := gen.tr.TransformName(tl.TargetConst, decl.Name)
 		if decl.Value == nil && string(name) == decl.Expression {
 			continue
@@ -46,7 +49,7 @@ func (gen *Generator) writeConstDeclaration(wr io.Writer, decl *tl.CDecl) {
 		filepath.ToSlash(gen.tr.SrcLocation(tl.TargetConst, decl.Name, decl.Position)))
 	goSpec := gen.tr.TranslateSpec(decl.Spec)
 
-	if decl.Value != nil {
+	if decl.Value != nil && !isUnknownConstValue(decl.Value) {
 		fmt.Fprintf(wr, "const %s %s = %v", declName, goSpec, decl.Value)
 		return
 	} else if len(decl.Expression) > 0 {
@@ -216,6 +219,15 @@ func iotaOnZero(i int, v interface{}) string {
 		}
 	}
 	return result
+}
+
+// isUnknownConstValue detects the placeholder emitted by cc for macro values
+// that could not be reduced to a concrete Go constant expression.
+func isUnknownConstValue(v interface{}) bool {
+	if v == nil {
+		return false
+	}
+	return fmt.Sprint(v) == "<unknown value>"
 }
 
 func writeStartConst(wr io.Writer) {
