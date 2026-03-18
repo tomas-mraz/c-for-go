@@ -101,8 +101,11 @@ func ParseWith(cfg *Config) (*cc.AST, error) {
 	ccConfig, _ := cc.NewConfig(runtime.GOOS, cfg.Arch)
 	// Let cc provide all predefines and builtins. Only append custom definitions.
 	ccConfig.Predefined += predefined
-	ccConfig.IncludePaths = append(ccConfig.IncludePaths, cfg.IncludePaths...)
-	ccConfig.SysIncludePaths = append(ccConfig.SysIncludePaths, cfg.SysIncludePaths...)
+	// Prefer project-supplied header roots over host defaults so cross-target
+	// sysroots shadow the local machine's libc headers.
+	ccConfig.IncludePaths = append(append([]string{}, cfg.IncludePaths...), ccConfig.IncludePaths...)
+	ccConfig.SysIncludePaths = append(append([]string{}, cfg.SysIncludePaths...), ccConfig.SysIncludePaths...)
+	ccConfig.PragmaHandler = pragmaOnceHandler()
 	var sources []cc.Source
 	sources = append(sources, cc.Source{Name: "<predefined>", Value: ccConfig.Predefined})
 	sources = append(sources, cc.Source{Name: "<builtin>", Value: cc.Builtin})
@@ -112,6 +115,30 @@ func ParseWith(cfg *Config) (*cc.AST, error) {
 		})
 	}
 	return cc.Translate(ccConfig, sources)
+}
+
+func pragmaOnceHandler() func([]cc.Token) error {
+	seen := map[string]struct{}{}
+	return func(toks []cc.Token) error {
+		if !isPragmaOnce(toks) {
+			return nil
+		}
+
+		filename := filepath.Clean(toks[0].Position().Filename)
+		if filename == "." || filename == "" {
+			return nil
+		}
+		if _, ok := seen[filename]; ok {
+			return cc.SkipSource
+		}
+
+		seen[filename] = struct{}{}
+		return nil
+	}
+}
+
+func isPragmaOnce(toks []cc.Token) bool {
+	return len(toks) == 1 && toks[0].SrcStr() == "once"
 }
 
 func checkConfig(cfg *Config) (*Config, error) {
