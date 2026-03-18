@@ -43,6 +43,7 @@ func ParseWith(cfg *Config) (*cc.AST, error) {
 	}
 
 	var predefined string
+	predefined += compatibilityPredefined()
 	// user-provided defines take precedence
 	for name, value := range cfg.Defines {
 		if loc, ok := cfg.DefineLocations[name]; ok && loc.Line > 0 {
@@ -115,6 +116,19 @@ func ParseWith(cfg *Config) (*cc.AST, error) {
 		})
 	}
 	return cc.Translate(ccConfig, sources)
+}
+
+// compatibilityPredefined strips Android NDK nullability annotations that cc/v4
+// does not parse reliably, such as `_Nullable` and `_Null_unspecified`.
+func compatibilityPredefined() string {
+	return `
+#ifndef _Nullable
+#define _Nullable
+#endif
+#ifndef _Null_unspecified
+#define _Null_unspecified
+#endif
+`
 }
 
 func pragmaOnceHandler() func([]cc.Token) error {
