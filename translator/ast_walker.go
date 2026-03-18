@@ -98,6 +98,9 @@ func (t *Translator) declarator(typ cc.Type, name string, isTypedef bool, isStat
 		IsStatic:  isStatic,
 		Position:  position,
 	}
+	if isTypedef && len(name) > 0 {
+		decl.Spec.SetRaw(name)
+	}
 	return decl
 }
 

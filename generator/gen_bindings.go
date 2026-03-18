@@ -500,6 +500,10 @@ func (gen *Generator) proxyValueFromGo(memTip tl.Tip, name string,
 			len(goSpec.OuterArr)+len(goSpec.InnerArr) == 0 && goSpec.Pointers == 0 {
 			proxy = fmt.Sprintf("(%s)(%s), cgoAllocsUnknown", cgoSpec, name)
 			return
+		} else if goSpec.Base == "unsafe.Pointer" &&
+			len(goSpec.Raw) > 0 && goSpec.Raw != "unsafe.Pointer" {
+			proxy = fmt.Sprintf("(%s)(unsafe.Pointer(%s)), cgoAllocsUnknown", cgoSpec.Base, name)
+			return
 		} else if goSpec.Kind == tl.FunctionKind {
 			var ref string
 			if goSpec.Pointers == 0 {

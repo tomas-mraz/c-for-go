@@ -87,7 +87,7 @@ func (spec GoTypeSpec) String() string {
 	buf.WriteString(arrs(spec.OuterArr))
 
 	var unsafePointer uint8
-	if spec.Base == "unsafe.Pointer" && len(spec.Raw) == 0 {
+	if spec.Base == "unsafe.Pointer" {
 		unsafePointer = 1
 	}
 	if spec.Pointers > 0 {

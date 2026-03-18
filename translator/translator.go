@@ -912,9 +912,13 @@ func (t *Translator) TranslateSpec(spec CType, tips ...Tip) GoTypeSpec {
 			OuterArr: spec.OuterArrays(),
 			InnerArr: spec.InnerArrays(),
 		}
+		var (
+			decl     *CDecl
+			tagKnown bool
+		)
 		switch wrapper.Kind {
 		case OpaqueStructKind, StructKind, FunctionKind, UnionKind:
-			decl, tagKnown := t.tagMap[spec.GetTag()]
+			decl, tagKnown = t.bestTypedefForSpec(spec)
 			if !tagKnown && wrapper.Kind == FunctionKind {
 				// another try using the type
 				fspec := spec.(*CFunctionSpec)
@@ -935,7 +939,9 @@ func (t *Translator) TranslateSpec(spec CType, tips ...Tip) GoTypeSpec {
 		default:
 			wrapper.splitPointers(ptrTip, spec.GetPointers())
 		}
-		if base := spec.GetBase(); len(base) > 0 {
+		if tagKnown && len(decl.Name) > 0 && t.IsAcceptableName(TargetType, decl.Name) {
+			wrapper.Raw = string(t.TransformName(TargetType, decl.Name))
+		} else if base := spec.GetBase(); len(base) > 0 {
 			wrapper.Raw = string(t.TransformName(TargetType, base))
 		} else if cgoName := spec.CGoName(); len(cgoName) > 0 {
 			wrapper.Raw = "C." + cgoName
@@ -946,7 +952,7 @@ func (t *Translator) TranslateSpec(spec CType, tips ...Tip) GoTypeSpec {
 
 func (t *Translator) NormalizeSpecPointers(spec CType) CType {
 	if spec.Kind() == OpaqueStructKind {
-		decl, tagKnown := t.tagMap[spec.GetTag()]
+		decl, tagKnown := t.bestTypedefForSpec(spec)
 		if tagKnown {
 			spec := spec.Copy()
 			spec.SetPointers(spec.GetPointers() - decl.Spec.GetPointers())
@@ -962,9 +968,11 @@ func (t *Translator) CGoSpec(spec CType, asArg bool) CGoSpec {
 		OuterArr: spec.OuterArrays(),
 		InnerArr: spec.InnerArrays(),
 	}
-	if decl, ok := t.tagMap[spec.GetTag()]; ok {
+	if decl, ok := t.bestTypedefForSpec(spec); ok {
 		// count in the pointers of the base type under typedef
 		cgo.Pointers = spec.GetPointers() - decl.Spec.GetPointers()
+		cgo.Base = "C." + decl.Spec.CGoName()
+		return cgo
 	}
 	if typ, ok := spec.(*CTypeSpec); ok {
 		if typ.Base == "void*" {
@@ -978,6 +986,50 @@ func (t *Translator) CGoSpec(spec CType, asArg bool) CGoSpec {
 	}
 	cgo.Base = "C." + spec.CGoName()
 	return cgo
+}
+
+func (t *Translator) bestTypedefForSpec(spec CType) (*CDecl, bool) {
+	tag := spec.GetTag()
+	if len(tag) == 0 {
+		return nil, false
+	}
+	preferredName := spec.GetBase()
+
+	matchKind := func(kind CTypeKind) bool {
+		switch spec.Kind() {
+		case StructKind, OpaqueStructKind:
+			return kind == StructKind || kind == OpaqueStructKind
+		case UnionKind:
+			return kind == UnionKind
+		default:
+			return kind == spec.Kind()
+		}
+	}
+
+	var best *CDecl
+	for _, decl := range t.typedefs {
+		if len(decl.Name) == 0 || decl.Spec.GetTag() != tag || !matchKind(decl.Spec.Kind()) {
+			continue
+		}
+		if decl.Spec.GetPointers() > spec.GetPointers() {
+			continue
+		}
+		if best == nil || decl.Spec.GetPointers() > best.Spec.GetPointers() {
+			best = decl
+			continue
+		}
+		if best.Spec.GetPointers() == decl.Spec.GetPointers() && len(preferredName) > 0 {
+			if decl.Name == preferredName && best.Name != preferredName {
+				best = decl
+			}
+		}
+	}
+	if best != nil {
+		return best, true
+	}
+
+	decl, ok := t.tagMap[tag]
+	return decl, ok
 }
 
 func (t *Translator) registerTagsOf(decl *CDecl) {

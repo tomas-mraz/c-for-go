@@ -251,9 +251,7 @@ func (gen *Generator) WriteTypedefs(wr io.Writer) int {
 			if seenStructTags[tag] {
 				continue
 			}
-			if !gen.tr.IsAcceptableName(tl.TargetPublic, tag) {
-				continue
-			} else if !gen.tr.IsAcceptableName(tl.TargetType, tag) {
+			if !gen.tr.IsAcceptableName(tl.TargetType, tag) {
 				continue
 			}
 			if memTipRx, ok := gen.tr.MemTipRx(tag); ok {
@@ -267,9 +265,7 @@ func (gen *Generator) WriteTypedefs(wr io.Writer) int {
 			if seenUnionTags[tag] {
 				continue
 			}
-			if !gen.tr.IsAcceptableName(tl.TargetPublic, tag) {
-				continue
-			} else if !gen.tr.IsAcceptableName(tl.TargetType, tag) {
+			if !gen.tr.IsAcceptableName(tl.TargetType, tag) {
 				continue
 			}
 			gen.writeUnionTypedef(wr, decl)
