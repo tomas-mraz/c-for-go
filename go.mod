@@ -9,7 +9,7 @@ require (
 	github.com/xlab/pkgconfig v0.0.0-20170226114623-cea12a0fd245
 	golang.org/x/tools v0.43.0
 	gopkg.in/yaml.v3 v3.0.1
-	modernc.org/cc/v4 v4.27.1
+	modernc.org/cc/v4 v4.27.3
 	modernc.org/token v1.1.0
 )
 
