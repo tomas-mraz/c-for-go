@@ -23,6 +23,11 @@ $ go install github.com/xlab/c-for-go@latest
 
 A simple [Makefile template](https://github.com/xlab/c-for-go/wiki/Makefile-template).
 
+### Using
+
+`c-for-go -out=. -ccdefs=true android.yml`
+
+
 ### In action
 
 * https://github.com/xlab/android-go 🌟
