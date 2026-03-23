@@ -22,16 +22,17 @@ func (gen *Generator) writeDefinesGroup(wr io.Writer, defines []*tl.CDecl) (n in
 		if decl.Value == nil && string(name) == decl.Expression {
 			continue
 		}
+		if decl.Value == nil && len(decl.Expression) == 0 {
+			continue
+		}
+
 		fmt.Fprintf(wr, "// %s as defined in %s\n", name,
 			filepath.ToSlash(gen.tr.SrcLocation(tl.TargetConst, decl.Name, decl.Position)))
 
 		if decl.Value != nil {
 			fmt.Fprintf(wr, "%s = %v", name, decl.Value)
-		} else if len(decl.Expression) > 0 {
-			fmt.Fprintf(wr, "%s = %s", name, decl.Expression)
 		} else {
-			// In this case, it's nil or the expression is zero length.
-			// fmt.Fprint(wr, name)
+			fmt.Fprintf(wr, "%s = %s", name, decl.Expression)
 		}
 		writeSpace(wr, 1)
 		n++

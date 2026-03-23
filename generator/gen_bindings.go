@@ -382,6 +382,10 @@ func (gen *Generator) getCopyBytesHelper(cgoSpec tl.CGoSpec) *Helper {
 				go a.Free()
 			})
 
+			if slice == nil || slice.Len == 0 {
+				return nil, allocs
+			}
+
 			mem0 := unsafe.Pointer(C.CBytes(*(*[]byte)(unsafe.Pointer(&sliceHeader{
 				Data: slice.Data,
 				Len: int(%s) * slice.Len,
