@@ -5,6 +5,7 @@ import (
 	"io"
 	"math/rand"
 	"sort"
+	"strings"
 
 	tl "github.com/tomas-mraz/c-for-go/translator"
 )
@@ -14,12 +15,13 @@ type Generator struct {
 	cfg *Config
 	tr  *tl.Translator
 	//
-	closed        bool
-	closeC, doneC chan struct{}
-	helpersChan   chan *Helper
-	rand          *rand.Rand
-	noTimestamps  bool
-	maxMem        MemSpec
+	closed          bool
+	closeC, doneC   chan struct{}
+	helpersChan     chan *Helper
+	rand            *rand.Rand
+	noTimestamps    bool
+	maxMem          MemSpec
+	currentPlatform string // set when processing platform-specific declarations
 }
 
 func (g *Generator) DisableTimestamps() {
@@ -32,15 +34,24 @@ type TraitFlagGroup struct {
 	Flags  []string `yaml:"flags"`
 }
 
+type PlatformFileConfig struct {
+	Header        string   `yaml:"header"`
+	NameMatch     []string `yaml:"nameMatch"`
+	Output        string   `yaml:"output"`
+	BuildTag      string   `yaml:"buildTag"`
+	ExtraPreamble string   `yaml:"extraPreamble"`
+}
+
 type Config struct {
-	PackageName        string           `yaml:"PackageName"`
-	PackageDescription string           `yaml:"PackageDescription"`
-	PackageLicense     string           `yaml:"PackageLicense"`
-	PkgConfigOpts      []string         `yaml:"PkgConfigOpts"`
-	FlagGroups         []TraitFlagGroup `yaml:"FlagGroups"`
-	SysIncludes        []string         `yaml:"SysIncludes"`
-	Includes           []string         `yaml:"Includes"`
-	Options            GenOptions       `yaml:"Options"`
+	PackageName        string               `yaml:"PackageName"`
+	PackageDescription string               `yaml:"PackageDescription"`
+	PackageLicense     string               `yaml:"PackageLicense"`
+	PkgConfigOpts      []string             `yaml:"PkgConfigOpts"`
+	FlagGroups         []TraitFlagGroup     `yaml:"FlagGroups"`
+	SysIncludes        []string             `yaml:"SysIncludes"`
+	Includes           []string             `yaml:"Includes"`
+	Options            GenOptions           `yaml:"Options"`
+	PlatformFiles      []PlatformFileConfig `yaml:"PlatformFiles"`
 }
 
 type GenOptions struct {
@@ -188,7 +199,11 @@ func (gen *Generator) MemTipOf(decl *tl.CDecl) tl.Tip {
 	return memTip
 }
 
-func (gen *Generator) WriteTypedefs(wr io.Writer) int {
+func (gen *Generator) WriteTypedefs(wr io.Writer, platformWriters ...map[string]io.Writer) int {
+	var pw map[string]io.Writer
+	if len(platformWriters) > 0 {
+		pw = platformWriters[0]
+	}
 	var count int
 	typedefs := gen.tr.Typedefs()
 	seenStructTags := make(map[string]bool, len(typedefs))
@@ -201,6 +216,7 @@ func (gen *Generator) WriteTypedefs(wr io.Writer) int {
 		if !gen.tr.IsAcceptableName(tl.TargetType, decl.Name) {
 			continue
 		}
+		w := gen.writerForDecl(decl, wr, pw)
 		switch decl.Spec.Kind() {
 		case tl.StructKind, tl.OpaqueStructKind:
 			if tag := decl.Spec.GetTag(); len(tag) > 0 {
@@ -212,7 +228,7 @@ func (gen *Generator) WriteTypedefs(wr io.Writer) int {
 				seenStructTags[tag] = true
 			}
 			memTip := gen.MemTipOf(decl)
-			gen.writeStructTypedef(wr, decl, memTip == tl.TipMemRaw, seenStructNames)
+			gen.writeStructTypedef(w, decl, memTip == tl.TipMemRaw, seenStructNames)
 		case tl.UnionKind:
 			if len(decl.Name) > 0 {
 				if seenUnionNames[decl.Name] {
@@ -228,17 +244,18 @@ func (gen *Generator) WriteTypedefs(wr io.Writer) int {
 				}
 				seenUnionTags[tag] = true
 			}
-			gen.writeUnionTypedef(wr, decl)
+			gen.writeUnionTypedef(w, decl)
 		case tl.EnumKind:
 			if !decl.Spec.IsComplete() {
-				gen.writeEnumTypedef(wr, decl)
+				gen.writeEnumTypedef(w, decl)
 			}
 		case tl.TypeKind:
-			gen.writeTypeTypedef(wr, decl, seenTypeNames)
+			gen.writeTypeTypedef(w, decl, seenTypeNames)
 		case tl.FunctionKind:
-			gen.writeFunctionTypedef(wr, decl, seenFunctionNames)
+			gen.writeFunctionTypedef(w, decl, seenFunctionNames)
 		}
-		writeSpace(wr, 1)
+		gen.currentPlatform = ""
+		writeSpace(w, 1)
 		count++
 	}
 
@@ -246,6 +263,7 @@ func (gen *Generator) WriteTypedefs(wr io.Writer) int {
 	for _, def := range tagDefs {
 		decl := def.tagDecl
 		tag := def.tagName
+		w := gen.writerForDecl(decl, wr, pw)
 		switch decl.Spec.Kind() {
 		case tl.StructKind, tl.OpaqueStructKind:
 			if seenStructTags[tag] {
@@ -255,11 +273,12 @@ func (gen *Generator) WriteTypedefs(wr io.Writer) int {
 				continue
 			}
 			if memTipRx, ok := gen.tr.MemTipRx(tag); ok {
-				gen.writeStructTypedef(wr, decl, memTipRx.Self() == tl.TipMemRaw, seenStructNames)
+				gen.writeStructTypedef(w, decl, memTipRx.Self() == tl.TipMemRaw, seenStructNames)
 			} else {
-				gen.writeStructTypedef(wr, decl, false, seenStructNames)
+				gen.writeStructTypedef(w, decl, false, seenStructNames)
 			}
-			writeSpace(wr, 1)
+			gen.currentPlatform = ""
+			writeSpace(w, 1)
 			count++
 		case tl.UnionKind:
 			if seenUnionTags[tag] {
@@ -268,15 +287,20 @@ func (gen *Generator) WriteTypedefs(wr io.Writer) int {
 			if !gen.tr.IsAcceptableName(tl.TargetType, tag) {
 				continue
 			}
-			gen.writeUnionTypedef(wr, decl)
-			writeSpace(wr, 1)
+			gen.writeUnionTypedef(w, decl)
+			gen.currentPlatform = ""
+			writeSpace(w, 1)
 			count++
 		}
 	}
 	return count
 }
 
-func (gen *Generator) WriteDeclares(wr io.Writer) int {
+func (gen *Generator) WriteDeclares(wr io.Writer, platformWriters ...map[string]io.Writer) int {
+	var pw map[string]io.Writer
+	if len(platformWriters) > 0 {
+		pw = platformWriters[0]
+	}
 	var count int
 	declares := gen.tr.Declares()
 	seenStructs := make(map[string]bool, len(declares))
@@ -285,6 +309,7 @@ func (gen *Generator) WriteDeclares(wr io.Writer) int {
 	seenFunctions := make(map[string]bool, len(declares))
 	for _, decl := range declares {
 		const public = true
+		w := gen.writerForDecl(decl, wr, pw)
 		switch decl.Spec.Kind() {
 		case tl.StructKind, tl.OpaqueStructKind:
 			if len(decl.Name) == 0 {
@@ -296,7 +321,7 @@ func (gen *Generator) WriteDeclares(wr io.Writer) int {
 			} else {
 				seenStructs[decl.Name] = true
 			}
-			gen.writeStructDeclaration(wr, decl, tl.NoTip, tl.NoTip, public)
+			gen.writeStructDeclaration(w, decl, tl.NoTip, tl.NoTip, public)
 		case tl.UnionKind:
 			if len(decl.Name) == 0 {
 				continue
@@ -307,7 +332,7 @@ func (gen *Generator) WriteDeclares(wr io.Writer) int {
 			} else {
 				seenUnions[decl.Name] = true
 			}
-			gen.writeUnionDeclaration(wr, decl, tl.NoTip, tl.NoTip, public)
+			gen.writeUnionDeclaration(w, decl, tl.NoTip, tl.NoTip, public)
 		case tl.EnumKind:
 			if !decl.Spec.IsComplete() {
 				if !gen.tr.IsAcceptableName(tl.TargetPublic, decl.Name) {
@@ -317,7 +342,7 @@ func (gen *Generator) WriteDeclares(wr io.Writer) int {
 				} else {
 					seenEnums[decl.Name] = true
 				}
-				gen.writeEnumDeclaration(wr, decl, tl.NoTip, tl.NoTip, public)
+				gen.writeEnumDeclaration(w, decl, tl.NoTip, tl.NoTip, public)
 			}
 		case tl.FunctionKind:
 			if !gen.tr.IsAcceptableName(tl.TargetFunction, decl.Name) {
@@ -327,7 +352,6 @@ func (gen *Generator) WriteDeclares(wr io.Writer) int {
 			} else {
 				seenFunctions[decl.Name] = true
 			}
-			// defaults to ref for the returns
 			ptrTip := tl.TipPtrRef
 			if ptrTipRx, ok := gen.tr.PtrTipRx(tl.TipScopeFunction, decl.Name); ok {
 				if tip := ptrTipRx.Self(); tip.IsValid() {
@@ -340,9 +364,10 @@ func (gen *Generator) WriteDeclares(wr io.Writer) int {
 					typeTip = tip
 				}
 			}
-			gen.writeFunctionDeclaration(wr, decl, ptrTip, typeTip, public)
+			gen.writeFunctionDeclaration(w, decl, ptrTip, typeTip, public)
 		}
-		writeSpace(wr, 1)
+		gen.currentPlatform = ""
+		writeSpace(w, 1)
 		count++
 	}
 	return count
@@ -357,9 +382,13 @@ func (gen *Generator) Close() {
 	<-gen.doneC
 }
 
-func (gen *Generator) MonitorAndWriteHelpers(goWr, chWr io.Writer, ccWr io.Writer, initWrFunc ...func() (io.Writer, error)) {
+func (gen *Generator) MonitorAndWriteHelpers(goWr, chWr io.Writer, ccWr io.Writer, platformGoWriters ...map[string]io.Writer) {
+	var platformGoWr map[string]io.Writer
+	if len(platformGoWriters) > 0 {
+		platformGoWr = platformGoWriters[0]
+	}
 	seenHelperNames := make(map[string]bool)
-	var seenGoHelper bool
+	seenGoHeaders := make(map[string]bool) // track which writers got Go helper headers
 	var seenCHHelper bool
 	var seenCCHelper bool
 	for {
@@ -379,43 +408,35 @@ func (gen *Generator) MonitorAndWriteHelpers(goWr, chWr io.Writer, ccWr io.Write
 			var wr io.Writer
 			switch helper.Side {
 			case NoSide, GoSide:
-				if goWr != nil {
-					wr = goWr
-				} else if len(initWrFunc) < 1 {
-					continue
-				} else if w, err := initWrFunc[0](); err != nil {
-					continue
-				} else {
-					wr = w
+				// Route Go helpers to platform writer if the helper name
+				// matches a platform's nameMatch pattern. Shared helpers
+				// like cgoAllocMap that don't match any pattern go to main.
+				if platformGoWr != nil {
+					routed := false
+					for output, pw := range platformGoWr {
+						if gen.helperBelongsToPlatform(helper.Name, output) {
+							wr = pw
+							routed = true
+							break
+						}
+					}
+					if routed {
+						break
+					}
 				}
-				if !seenGoHelper {
+				wr = goWr
+				if !seenGoHeaders[""] {
 					gen.writeGoHelpersHeader(wr)
-					seenGoHelper = true
+					seenGoHeaders[""] = true
 				}
 			case CHSide:
-				if chWr != nil {
-					wr = chWr
-				} else if len(initWrFunc) < 2 {
-					continue
-				} else if w, err := initWrFunc[1](); err != nil {
-					continue
-				} else {
-					wr = w
-				}
+				wr = chWr
 				if !seenCHHelper {
 					gen.writeCHHelpersHeader(wr)
 					seenCHHelper = true
 				}
 			case CCSide:
-				if ccWr != nil {
-					wr = ccWr
-				} else if len(initWrFunc) < 3 {
-					continue
-				} else if w, err := initWrFunc[2](); err != nil {
-					continue
-				} else {
-					wr = w
-				}
+				wr = ccWr
 				if !seenCCHelper {
 					gen.writeCCHelpersHeader(wr)
 					seenCCHelper = true
@@ -504,4 +525,69 @@ const (
 
 func (g *Generator) SetMaxMemory(spec MemSpec) {
 	g.maxMem = spec
+}
+
+// platformOutputFor returns the output name for a declaration based on its
+// source filename and name. Empty string means it belongs to the main output.
+func (gen *Generator) platformOutputFor(filename, declName string) string {
+	for _, pf := range gen.cfg.PlatformFiles {
+		if strings.HasSuffix(filename, pf.Header) {
+			return pf.Output
+		}
+		nameLower := strings.ToLower(declName)
+		for _, pattern := range pf.NameMatch {
+			if strings.Contains(nameLower, strings.ToLower(pattern)) {
+				return pf.Output
+			}
+		}
+	}
+	return ""
+}
+
+// writerForDecl returns the appropriate writer for a declaration based on its
+// source filename and name. If the declaration comes from a platform-specific
+// header or matches a name pattern, the corresponding platform writer is
+// returned; otherwise the default writer.
+func (gen *Generator) writerForDecl(decl *tl.CDecl, defaultWr io.Writer, platformWriters map[string]io.Writer) io.Writer {
+	if len(platformWriters) == 0 {
+		return defaultWr
+	}
+	if platform := gen.platformOutputFor(decl.Position.Filename, decl.Name); platform != "" {
+		if wr, ok := platformWriters[platform]; ok {
+			gen.currentPlatform = platform
+			return wr
+		}
+	}
+	gen.currentPlatform = ""
+	return defaultWr
+}
+
+// helperBelongsToPlatform checks if a helper's name matches the platform's
+// nameMatch or header pattern. Shared helpers like cgoAllocMap don't match.
+func (gen *Generator) helperBelongsToPlatform(helperName, platformOutput string) bool {
+	for _, pf := range gen.cfg.PlatformFiles {
+		if pf.Output != platformOutput {
+			continue
+		}
+		nameLower := strings.ToLower(helperName)
+		for _, pattern := range pf.NameMatch {
+			if strings.Contains(nameLower, strings.ToLower(pattern)) {
+				return true
+			}
+		}
+		if strings.Contains(helperName, pf.Header) {
+			return true
+		}
+	}
+	return false
+}
+
+// HasPlatformFiles returns true if any platform files are configured.
+func (gen *Generator) HasPlatformFiles() bool {
+	return len(gen.cfg.PlatformFiles) > 0
+}
+
+// GetPlatformFiles returns the platform file configurations.
+func (gen *Generator) GetPlatformFiles() []PlatformFileConfig {
+	return gen.cfg.PlatformFiles
 }

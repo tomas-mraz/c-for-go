@@ -27,6 +27,7 @@ type Helper struct {
 	Source      string
 	Nillable    bool
 	Requires    []*Helper
+	Origin      string // platform output name, empty for main output
 }
 
 type getHelperFunc func(gen *Generator, spec tl.CGoSpec) *Helper
@@ -1014,11 +1015,17 @@ func (gen *Generator) submitHelper(h *Helper) {
 	if h == nil {
 		return
 	}
-	gen.helpersChan <- h
+	// Copy to avoid mutating shared helper variables (cgoAllocMap etc.)
+	tagged := *h
+	tagged.Origin = gen.currentPlatform
+	gen.helpersChan <- &tagged
 	reqs := h.Requires
 	for len(reqs) > 0 {
 		var newReqs Helpers
 		for _, req := range reqs {
+			// Don't tag dependencies with platform origin - they may be
+			// shared helpers (like cgoAllocMap) needed by both main and
+			// platform files.
 			gen.helpersChan <- req
 			newReqs = append(newReqs, req.Requires...)
 		}

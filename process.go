@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"os"
@@ -40,13 +41,15 @@ var goBufferNames = map[Buf]string{
 }
 
 type Process struct {
-	cfg          ProcessConfig
-	gen          *generator.Generator
-	genSync      sync.WaitGroup
-	goBuffers    map[Buf]*bytes.Buffer
-	chHelpersBuf *bytes.Buffer
-	ccHelpersBuf *bytes.Buffer
-	outputPath   string
+	cfg              ProcessConfig
+	gen              *generator.Generator
+	genSync          sync.WaitGroup
+	goBuffers        map[Buf]*bytes.Buffer
+	chHelpersBuf     *bytes.Buffer
+	ccHelpersBuf     *bytes.Buffer
+	outputPath       string
+	platformBuffers  map[string]*bytes.Buffer // platform output → combined Go buffer
+	platformHelpers  map[string]*bytes.Buffer // platform output → Go helpers buffer
 }
 
 type ProcessConfig struct {
@@ -108,21 +111,32 @@ func NewProcess(configPath, outputPath string) (*Process, error) {
 		gen.DisableTimestamps()
 	}
 	c := &Process{
-		cfg:          cfg,
-		gen:          gen,
-		goBuffers:    make(map[Buf]*bytes.Buffer),
-		chHelpersBuf: new(bytes.Buffer),
-		ccHelpersBuf: new(bytes.Buffer),
-		outputPath:   outputPath,
+		cfg:             cfg,
+		gen:             gen,
+		goBuffers:       make(map[Buf]*bytes.Buffer),
+		chHelpersBuf:    new(bytes.Buffer),
+		ccHelpersBuf:    new(bytes.Buffer),
+		outputPath:      outputPath,
+		platformBuffers: make(map[string]*bytes.Buffer),
+		platformHelpers: make(map[string]*bytes.Buffer),
 	}
 	c.goBuffers[BufMain] = new(bytes.Buffer)
 	for opt := range goBufferNames {
 		c.goBuffers[opt] = new(bytes.Buffer)
 	}
+	// Create platform-specific buffers
+	for _, pf := range cfg.Generator.PlatformFiles {
+		c.platformBuffers[pf.Output] = new(bytes.Buffer)
+		c.platformHelpers[pf.Output] = new(bytes.Buffer)
+	}
 	goHelpersBuf := c.goBuffers[BufHelpers]
+	platformHelperWriters := make(map[string]io.Writer, len(c.platformHelpers))
+	for name, buf := range c.platformHelpers {
+		platformHelperWriters[name] = buf
+	}
 	go func() {
 		c.genSync.Add(1)
-		c.gen.MonitorAndWriteHelpers(goHelpersBuf, c.chHelpersBuf, c.ccHelpersBuf)
+		c.gen.MonitorAndWriteHelpers(goHelpersBuf, c.chHelpersBuf, c.ccHelpersBuf, platformHelperWriters)
 		c.genSync.Done()
 	}()
 	return c, nil
@@ -169,6 +183,12 @@ func getMapValue(node *yaml.Node, key string) *yaml.Node {
 }
 
 func (c *Process) Generate(noCGO bool) {
+	// Build platform writer maps for types and declarations
+	platformWriters := make(map[string]io.Writer, len(c.platformBuffers))
+	for name, buf := range c.platformBuffers {
+		platformWriters[name] = buf
+	}
+
 	main := c.goBuffers[BufMain]
 	if wr, ok := c.goBuffers[BufDoc]; ok {
 		if !c.gen.WriteDoc(wr) {
@@ -197,11 +217,11 @@ func (c *Process) Generate(noCGO bool) {
 		if !noCGO {
 			c.gen.WriteIncludes(wr)
 		}
-		if n := c.gen.WriteTypedefs(wr); n == 0 {
+		if n := c.gen.WriteTypedefs(wr, platformWriters); n == 0 {
 			c.goBuffers[BufTypes] = nil
 		}
 	} else {
-		c.gen.WriteTypedefs(main)
+		c.gen.WriteTypedefs(main, platformWriters)
 	}
 	if !noCGO {
 		if wr, ok := c.goBuffers[BufUnions]; ok {
@@ -213,7 +233,7 @@ func (c *Process) Generate(noCGO bool) {
 		} else {
 			c.gen.WriteUnions(main)
 		}
-		c.gen.WriteDeclares(main)
+		c.gen.WriteDeclares(main, platformWriters)
 	}
 }
 
@@ -295,6 +315,41 @@ func (c *Process) Flush(noCGO bool) error {
 			return err
 		}
 	}
+
+	// Write platform-specific files
+	for _, pf := range c.cfg.Generator.PlatformFiles {
+		typeBuf := c.platformBuffers[pf.Output]
+		helperBuf := c.platformHelpers[pf.Output]
+		if (typeBuf == nil || typeBuf.Len() == 0) && (helperBuf == nil || helperBuf.Len() == 0) {
+			continue
+		}
+		combined := new(bytes.Buffer)
+		// Write build tag
+		if pf.BuildTag != "" {
+			fmt.Fprintf(combined, "//go:build %s\n\n", pf.BuildTag)
+		}
+		// Write package header and includes with extra preamble
+		c.gen.WritePackageHeader(combined)
+		c.gen.WritePlatformIncludes(combined, pf.ExtraPreamble)
+		// Write types and declarations
+		if typeBuf != nil && typeBuf.Len() > 0 {
+			combined.Write(typeBuf.Bytes())
+		}
+		// Write helpers
+		if helperBuf != nil && helperBuf.Len() > 0 {
+			combined.Write(helperBuf.Bytes())
+		}
+		if f, err := createGoFile(pf.Output); err == nil {
+			if err := flushBufferToFile(combined.Bytes(), f, true); err != nil {
+				f.Close()
+				return err
+			}
+			f.Close()
+		} else {
+			return err
+		}
+	}
+
 	return nil
 }
 

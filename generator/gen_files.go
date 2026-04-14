@@ -60,6 +60,24 @@ func (gen *Generator) WriteIncludes(wr io.Writer) {
 	writeSpace(wr, 1)
 }
 
+// WritePlatformIncludes writes the CGO include block for a platform-specific file,
+// inserting the extra preamble (e.g. platform-specific cgo flags and includes)
+// before the standard includes.
+func (gen *Generator) WritePlatformIncludes(wr io.Writer, extraPreamble string) {
+	writeStartComment(wr)
+	if len(extraPreamble) > 0 {
+		fmt.Fprintln(wr, extraPreamble)
+	}
+	for _, path := range gen.cfg.Includes {
+		writeInclude(wr, path)
+	}
+	writeCStdIncludes(wr, gen.cfg.SysIncludes)
+	fmt.Fprintln(wr, `#include "cgo_helpers.h"`)
+	writeEndComment(wr)
+	fmt.Fprintln(wr, `import "C"`)
+	writeSpace(wr, 1)
+}
+
 func hasLib(paths []string, lib string) bool {
 	for i := range paths {
 		if paths[i] == lib {
