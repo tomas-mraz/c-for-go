@@ -33,8 +33,8 @@ type Helper struct {
 type getHelperFunc func(gen *Generator, spec tl.CGoSpec) *Helper
 
 var fromGoHelperMap = map[tl.GoTypeSpec]getHelperFunc{
-	tl.StringSpec:  (*Generator).getUnpackStringHelper,
-	tl.UStringSpec: (*Generator).getUnpackStringHelper,
+	tl.StringSpec:  (*Generator).getDefaultUnpackStringHelper,
+	tl.UStringSpec: (*Generator).getDefaultUnpackStringHelper,
 }
 
 var toGoHelperMap = map[tl.GoTypeSpec]getHelperFunc{
@@ -324,18 +324,25 @@ The caller is responsible for freeing the this memory via C.free.`, name, cgoSpe
 	return helper
 }
 
-func (gen *Generator) getUnpackStringHelper(cgoSpec tl.CGoSpec) *Helper {
+func (gen *Generator) getUnpackStringHelper(cgoSpec tl.CGoSpec, emptyStringNil bool) *Helper {
 	cgoSpec = tl.CGoSpec{
 		Pointers: 1,
 		Base:     cgoSpec.Base,
 	}
 	name := "unpack" + gen.getTypedHelperName("string", cgoSpec)
+	if emptyStringNil {
+		name += "EmptyStringNil"
+	}
+	var emptyStringNilGuard string
+	if emptyStringNil {
+		emptyStringNilGuard = "if str == \"\" {\n\t\t\treturn nil, nil\n\t\t}\n\n\t\t"
+	}
 	if gen.cfg.Options.SafeStrings {
 		return &Helper{
 			Name:        name,
 			Description: fmt.Sprintf("%s copies the data from Go string as %s.", name, cgoSpec),
 			Source: fmt.Sprintf(`func %s(str string) (%s, *cgoAllocMap) {
-			allocs := new(cgoAllocMap)
+			%sallocs := new(cgoAllocMap)
 			defer runtime.SetFinalizer(allocs, func(a *cgoAllocMap) {
 				go a.Free()
 			})
@@ -344,7 +351,7 @@ func (gen *Generator) getUnpackStringHelper(cgoSpec tl.CGoSpec) *Helper {
 			mem0 := unsafe.Pointer(C.CString(str))
 			allocs.Add(mem0)
 			return (%s)(mem0), allocs
-		}`, name, cgoSpec, cgoSpec),
+		}`, name, cgoSpec, emptyStringNilGuard, cgoSpec),
 			Requires: []*Helper{stringHeader, cgoAllocMap, safeString},
 		}
 	}
@@ -352,7 +359,7 @@ func (gen *Generator) getUnpackStringHelper(cgoSpec tl.CGoSpec) *Helper {
 		Name:        name,
 		Description: fmt.Sprintf("%s copies the data from Go string as %s.", name, cgoSpec),
 		Source: fmt.Sprintf(`func %s(str string) (%s, *cgoAllocMap) {
-			allocs := new(cgoAllocMap)
+			%sallocs := new(cgoAllocMap)
 			defer runtime.SetFinalizer(allocs, func(a *cgoAllocMap) {
 				go a.Free()
 			})
@@ -360,9 +367,13 @@ func (gen *Generator) getUnpackStringHelper(cgoSpec tl.CGoSpec) *Helper {
 			mem0 := unsafe.Pointer(C.CString(str))
 			allocs.Add(mem0)
 			return (%s)(mem0), allocs
-		}`, name, cgoSpec, cgoSpec),
+		}`, name, cgoSpec, emptyStringNilGuard, cgoSpec),
 		Requires: []*Helper{stringHeader, cgoAllocMap},
 	}
+}
+
+func (gen *Generator) getDefaultUnpackStringHelper(cgoSpec tl.CGoSpec) *Helper {
+	return gen.getUnpackStringHelper(cgoSpec, false)
 }
 
 func (gen *Generator) getCopyBytesHelper(cgoSpec tl.CGoSpec) *Helper {
@@ -478,7 +489,12 @@ func (gen *Generator) getUnpackHelper(goSpec tl.GoTypeSpec, cgoSpec tl.CGoSpec, 
 func (gen *Generator) proxyValueFromGo(memTip tl.Tip, name string,
 	goSpec tl.GoTypeSpec, cgoSpec tl.CGoSpec) (proxy string, nillable bool) {
 
-	if getHelper, ok := fromGoHelperMap[goSpec]; ok {
+	if goSpec.IsGoString() {
+		helper := gen.getUnpackStringHelper(cgoSpec, memTip == tl.TipMemEmptyStringNil)
+		gen.submitHelper(helper)
+		proxy = fmt.Sprintf("%s(%s)", helper.Name, name)
+		return proxy, helper.Nillable
+	} else if getHelper, ok := fromGoHelperMap[goSpec]; ok {
 		helper := getHelper(gen, cgoSpec)
 		gen.submitHelper(helper)
 		proxy = fmt.Sprintf("%s(%s)", helper.Name, name)
@@ -533,7 +549,7 @@ func (gen *Generator) proxyArgFromGo(memTip tl.Tip, name string,
 	goSpec tl.GoTypeSpec, cgoSpec tl.CGoSpec) (proxy string, nillable bool) {
 
 	if goSpec.IsGoString() {
-		helper := gen.getUnpackStringHelper(cgoSpec)
+		helper := gen.getUnpackStringHelper(cgoSpec, memTip == tl.TipMemEmptyStringNil)
 		gen.submitHelper(helper)
 		proxy = fmt.Sprintf("%s(%s)", helper.Name, name)
 		return proxy, helper.Nillable

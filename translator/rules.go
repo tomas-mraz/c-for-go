@@ -104,16 +104,17 @@ const (
 type Tip string
 
 const (
-	TipPtrSRef      Tip = "sref"
-	TipPtrRef       Tip = "ref"
-	TipPtrArr       Tip = "arr"
-	TipPtrInst      Tip = "inst"
-	TipMemRaw       Tip = "raw"
-	TipTypeNamed    Tip = "named"
-	TipTypePlain    Tip = "plain"
-	TipTypeString   Tip = "string"
-	TipTypeUnsigned Tip = "unsigned"
-	NoTip           Tip = ""
+	TipPtrSRef           Tip = "sref"
+	TipPtrRef            Tip = "ref"
+	TipPtrArr            Tip = "arr"
+	TipPtrInst           Tip = "inst"
+	TipMemRaw            Tip = "raw"
+	TipMemEmptyStringNil Tip = "empty-string-nil"
+	TipTypeNamed         Tip = "named"
+	TipTypePlain         Tip = "plain"
+	TipTypeString        Tip = "string"
+	TipTypeUnsigned      Tip = "unsigned"
+	NoTip                Tip = ""
 )
 
 type TipKind string
@@ -131,7 +132,7 @@ func (t Tip) Kind() TipKind {
 		return TipKindPtr
 	case TipTypePlain, TipTypeNamed, TipTypeString, TipTypeUnsigned:
 		return TipKindType
-	case TipMemRaw:
+	case TipMemRaw, TipMemEmptyStringNil:
 		return TipKindMem
 	default:
 		return TipKindUnknown
@@ -144,7 +145,7 @@ func (t Tip) IsValid() bool {
 		return true
 	case TipTypePlain, TipTypeNamed, TipTypeString:
 		return true
-	case TipMemRaw:
+	case TipMemRaw, TipMemEmptyStringNil:
 		return true
 	case TipTypeUnsigned:
 		return true
